@@ -27,6 +27,7 @@ const balancedAutoDraftTargets = {
   DST: 1,
 };
 
+const draftPickDurationMs = 3 * 60 * 1000;
 const playerDataVersion = "2026-expanded-10-team-ppr-v1";
 const stateStorageKey = document.body.dataset.storageKey || "gridiron-draft-lab";
 const adminUsername = "Treemander";
@@ -8831,14 +8832,17 @@ const state = loadState() ?? {
   selectedTradeTarget: null,
   showTradeInbox: false,
   tradeOffers: [],
+  draftHistory: [],
   matchupOpponentId: null,
   matchupWeek: 1,
   pick: 1,
+  draftPickStartedAt: Date.now(),
 };
 
 let bestLineupHighlightIds = new Set();
 let bestLineupHighlightTimer = null;
 let isRenamingTeamName = false;
+let autoPickInProgressForPick = null;
 
 function playerPointsLabel(player) {
   return `${player.points.toFixed(1)} 2026 proj pts`;
@@ -8890,11 +8894,15 @@ if (state.playerDataVersion !== playerDataVersion) {
   state.selectedTradeTarget = null;
   state.showTradeInbox = false;
   state.tradeOffers = [];
+  state.draftHistory = [];
+  state.draftPickStartedAt = Date.now();
 }
 
 ensureDraftOrder();
 state.currentView = ["draft", "team", "matchup", "freeAgency", "league"].includes(state.currentView) ? state.currentView : "draft";
 state.tradeOffers = Array.isArray(state.tradeOffers) ? state.tradeOffers : [];
+state.draftHistory = Array.isArray(state.draftHistory) ? state.draftHistory : [];
+state.draftPickStartedAt = Number.isFinite(Number(state.draftPickStartedAt)) ? Number(state.draftPickStartedAt) : Date.now();
 state.selectedTradeTarget = state.selectedTradeTarget ?? null;
 state.showTradeInbox = Boolean(state.showTradeInbox);
 state.matchupOpponentId = state.matchupOpponentId ?? null;
@@ -8948,6 +8956,7 @@ const els = {
   teamRosterCount: document.querySelector("#teamRosterCount"),
   teamView: document.querySelector("#teamView"),
   playerBoard: document.querySelector("#playerBoard"),
+  recentPicks: document.querySelector("#recentPicks"),
   playerSearch: document.querySelector("#playerSearch"),
   positionFilter: document.querySelector("#positionFilter"),
   freeAgentBoard: document.querySelector("#freeAgentBoard"),
@@ -8966,6 +8975,8 @@ const els = {
   autoFillBtn: document.querySelector("#autoFillBtn"),
   roundNumber: document.querySelector("#roundNumber"),
   pickNumber: document.querySelector("#pickNumber"),
+  draftTimer: document.querySelector("#draftTimer"),
+  draftTimerCard: document.querySelector("#draftTimerCard"),
   onClockTeam: document.querySelector("#onClockTeam"),
   adminSigninBtn: document.querySelector("#adminSigninBtn"),
   adminTeamSigninBtn: document.querySelector("#adminTeamSigninBtn"),
@@ -8982,6 +8993,10 @@ const els = {
 
 function isAdminSignedIn() {
   return sessionStorage.getItem("fantasy-admin-signed-in") === "true";
+}
+
+function isAdminSite() {
+  return stateStorageKey === "gridiron-draft-lab-admin";
 }
 
 function renderAdminSignIn() {
@@ -9050,7 +9065,9 @@ function sharedDraftState() {
     teams: state.teams,
     draftOrder: state.draftOrder,
     pick: state.pick,
+    draftPickStartedAt: state.draftPickStartedAt,
     tradeOffers: state.tradeOffers,
+    draftHistory: state.draftHistory,
   };
 }
 
@@ -9061,7 +9078,11 @@ function applySharedDraftState(nextSharedState) {
   state.teams = Array.isArray(nextSharedState.teams) ? nextSharedState.teams : state.teams;
   state.draftOrder = Array.isArray(nextSharedState.draftOrder) ? nextSharedState.draftOrder : state.draftOrder;
   state.pick = Number.isInteger(Number(nextSharedState.pick)) ? Number(nextSharedState.pick) : state.pick;
+  state.draftPickStartedAt = Number.isFinite(Number(nextSharedState.draftPickStartedAt))
+    ? Number(nextSharedState.draftPickStartedAt)
+    : state.draftPickStartedAt;
   state.tradeOffers = Array.isArray(nextSharedState.tradeOffers) ? nextSharedState.tradeOffers : [];
+  state.draftHistory = Array.isArray(nextSharedState.draftHistory) ? nextSharedState.draftHistory : [];
   ensureDraftOrder();
 
   if (state.signedInTeamId && !state.teams.some((team) => team.id === state.signedInTeamId)) {
@@ -9074,6 +9095,7 @@ function applySharedDraftState(nextSharedState) {
   localStorage.setItem(stateStorageKey, JSON.stringify(state));
   render();
   isApplyingLiveState = false;
+  updateDraftTimerDisplay();
 }
 
 function setLiveDraftStatus(status, text) {
@@ -9587,6 +9609,53 @@ function playerById(playerId) {
   return players.find((player) => player.id === playerId) ?? null;
 }
 
+function recordDraftPick(team, playerId, pickNumber) {
+  if (!team || !playerById(playerId)) return;
+  state.draftHistory = Array.isArray(state.draftHistory) ? state.draftHistory : [];
+  state.draftHistory = state.draftHistory.filter((pick) => pick.pick !== pickNumber);
+  state.draftHistory.push({
+    pick: pickNumber,
+    teamId: team.id,
+    playerId,
+    selectedAt: Date.now(),
+  });
+}
+
+function resetDraftTimer() {
+  state.draftPickStartedAt = Date.now();
+}
+
+function remainingDraftPickMs() {
+  if (isDraftComplete()) return 0;
+  const startedAt = Number.isFinite(Number(state.draftPickStartedAt)) ? Number(state.draftPickStartedAt) : Date.now();
+  return Math.max(draftPickDurationMs - (Date.now() - startedAt), 0);
+}
+
+function formatDraftTimer(ms) {
+  const totalSeconds = Math.ceil(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function updateDraftTimerDisplay() {
+  if (!els.draftTimer) return;
+  if (isDraftComplete()) {
+    autoPickInProgressForPick = null;
+    els.draftTimer.textContent = "Done";
+    els.draftTimerCard?.setAttribute("data-status", "complete");
+    return;
+  }
+
+  const remainingMs = remainingDraftPickMs();
+  els.draftTimer.textContent = formatDraftTimer(remainingMs);
+  const status = remainingMs <= 0 ? "expired" : remainingMs <= 30_000 ? "warning" : "active";
+  els.draftTimerCard?.setAttribute("data-status", status);
+  if (remainingMs <= 0 && !isApplyingLiveState) {
+    autoDraftExpiredPick();
+  }
+}
+
 function incomingTradeOffers() {
   return state.tradeOffers.filter((offer) => offer.status === "pending" && offer.toTeamId === state.signedInTeamId);
 }
@@ -9764,7 +9833,10 @@ function renderSignIn() {
   if (els.autoCompleteDraftBtn) {
     els.autoCompleteDraftBtn.disabled = !state.teams.length || isDraftComplete();
   }
-  els.randomizeOrderBtn.disabled = state.teams.length < 2 || isDraftComplete();
+  if (els.randomizeOrderBtn) {
+    els.randomizeOrderBtn.hidden = !isAdminSite();
+    els.randomizeOrderBtn.disabled = !isAdminSite() || state.teams.length < 2 || isDraftComplete();
+  }
   if (els.resetDraftBtn) {
     els.resetDraftBtn.disabled = !team;
   }
@@ -9862,6 +9934,49 @@ function renderBoard() {
   const position = els.positionFilter.value;
   const visiblePlayers = availablePlayers().filter((player) => playerMatchesFilters(player, query, position));
   renderPlayerList(els.playerBoard, visiblePlayers, "Draft", "No available players match those filters.", draftPlayer, true);
+  renderRecentPicks();
+}
+
+function renderRecentPicks() {
+  if (!els.recentPicks) return;
+  const recent = [...state.draftHistory]
+    .filter((pick) => teamById(pick.teamId) && playerById(pick.playerId))
+    .sort((a, b) => b.pick - a.pick)
+    .slice(0, 8);
+
+  if (!recent.length) {
+    els.recentPicks.innerHTML = `
+      <div class="recent-picks-header">
+        <h3>Recent picks</h3>
+        <span>None yet</span>
+      </div>
+      <p class="empty-state">Drafted players will appear here as picks are made.</p>
+    `;
+    return;
+  }
+
+  const items = recent.map((pick) => {
+    const team = teamById(pick.teamId);
+    const player = playerById(pick.playerId);
+    return `
+      <article class="recent-pick">
+        <span class="recent-pick-number">Pick ${pick.pick}</span>
+        <strong class="recent-pick-player">
+          <span class="recent-pick-position">${escapeHTML(player.pos)}</span>
+          ${playerNameProfileButton(player)}
+        </strong>
+        <span>Selected by ${escapeHTML(team.name)}</span>
+      </article>
+    `;
+  }).join("");
+
+  els.recentPicks.innerHTML = `
+    <div class="recent-picks-header">
+      <h3>Recent picks</h3>
+      <span>${recent.length} shown</span>
+    </div>
+    <div class="recent-picks-list">${items}</div>
+  `;
 }
 
 function renderFreeAgents() {
@@ -10452,6 +10567,7 @@ function renderClock() {
   els.pickNumber.textContent = state.pick;
   els.roundNumber.textContent = Math.ceil(state.pick / teamCount);
   els.onClockTeam.textContent = currentDraftTeam()?.name ?? "No teams";
+  updateDraftTimerDisplay();
 }
 
 function render() {
@@ -10485,7 +10601,9 @@ function addPlayerToTeam(playerId, shouldAdvancePick = false) {
   state.selectedSwapPlayerId = null;
   syncLineupFromRoster(team);
   if (shouldAdvancePick) {
+    recordDraftPick(team, playerId, state.pick);
     state.pick += 1;
+    resetDraftTimer();
   }
   persistAndRender();
 }
@@ -10750,6 +10868,43 @@ function autoDraftPick() {
   if (player) draftPlayer(player.id);
 }
 
+function autoDraftExpiredPick() {
+  const expiredPick = state.pick;
+  if (autoPickInProgressForPick === expiredPick || isDraftComplete()) return;
+  autoPickInProgressForPick = expiredPick;
+
+  const team = currentDraftTeam();
+  if (!team) {
+    state.pick += 1;
+    resetDraftTimer();
+    persistAndRender();
+    autoPickInProgressForPick = null;
+    return;
+  }
+
+  if (team.picks.length >= rosterSlots.length) {
+    state.pick += 1;
+    resetDraftTimer();
+    persistAndRender();
+    autoPickInProgressForPick = null;
+    return;
+  }
+
+  const player = bestNeedFit(team);
+  if (!player) {
+    autoPickInProgressForPick = null;
+    return;
+  }
+
+  recordDraftPick(team, player.id, state.pick);
+  team.picks.push(player.id);
+  syncLineupFromRoster(team);
+  state.pick += 1;
+  resetDraftTimer();
+  persistAndRender();
+  autoPickInProgressForPick = null;
+}
+
 function autoCompleteDraft() {
   if (!state.teams.length || isDraftComplete()) return;
 
@@ -10758,6 +10913,7 @@ function autoCompleteDraft() {
     const team = currentDraftTeam();
     if (!team || team.picks.length >= rosterSlots.length) {
       state.pick += 1;
+      resetDraftTimer();
       guard -= 1;
       continue;
     }
@@ -10765,8 +10921,10 @@ function autoCompleteDraft() {
     const player = bestNeedFit(team);
     if (!player) break;
 
+    recordDraftPick(team, player.id, state.pick);
     team.picks.push(player.id);
     state.pick += 1;
+    resetDraftTimer();
     guard -= 1;
   }
 
@@ -10783,6 +10941,7 @@ function shuffleTeamIds(teamIds) {
 }
 
 function randomizeDraftOrder() {
+  if (!isAdminSite()) return;
   if (state.teams.length < 2 || isDraftComplete()) return;
 
   const draftStarted = state.pick > 1 || state.teams.some((team) => team.picks.length > 0);
@@ -10797,9 +10956,12 @@ function randomizeDraftOrder() {
       team.lineup = [];
     });
     state.tradeOffers = [];
+    state.draftHistory = [];
     state.selectedTradeTarget = null;
     state.pick = 1;
+    resetDraftTimer();
   }
+  resetDraftTimer();
   persistAndRender();
 }
 
@@ -10923,9 +11085,11 @@ if (els.autoCompleteDraftBtn) {
   });
 }
 
-els.randomizeOrderBtn.addEventListener("click", () => {
-  randomizeDraftOrder();
-});
+if (els.randomizeOrderBtn) {
+  els.randomizeOrderBtn.addEventListener("click", () => {
+    randomizeDraftOrder();
+  });
+}
 
 if (els.autoFillBtn) {
   els.autoFillBtn.addEventListener("click", () => {
@@ -10941,8 +11105,10 @@ if (els.resetDraftBtn) {
       team.lineup = [];
     });
     state.tradeOffers = [];
+    state.draftHistory = [];
     state.selectedTradeTarget = null;
     state.pick = 1;
+    resetDraftTimer();
     persistAndRender();
   });
 }
@@ -10984,4 +11150,5 @@ document.addEventListener("keydown", (event) => {
 });
 
 render();
+setInterval(updateDraftTimerDisplay, 1000);
 connectLiveDraft();
