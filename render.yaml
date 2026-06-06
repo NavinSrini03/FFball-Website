@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: fantasy-football-live-draft
+    runtime: node
+    buildCommand: ""
+    startCommand: node server.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATA_DIR
+        value: /var/data
+    disk:
+      name: live-draft-data
+      mountPath: /var/data
+      sizeGB: 1
