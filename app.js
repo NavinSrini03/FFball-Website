@@ -9836,6 +9836,9 @@ function renderTeams() {
   }
 
   state.teams.forEach((team) => {
+    const row = document.createElement("div");
+    row.className = "team-card-row";
+
     const button = document.querySelector("#teamTemplate").content.firstElementChild.cloneNode(true);
     button.classList.toggle("active", team.id === state.activeTeamId);
     button.disabled = team.id !== state.signedInTeamId;
@@ -9856,7 +9859,22 @@ function renderTeams() {
       event.preventDefault();
       renameSignedInTeam();
     });
-    els.teamList.append(button);
+
+    row.append(button);
+
+    if (isAdminSite()) {
+      const deleteButton = document.createElement("button");
+      deleteButton.className = "delete-team-btn";
+      deleteButton.type = "button";
+      deleteButton.textContent = "Delete";
+      deleteButton.setAttribute("aria-label", `Delete ${team.name}`);
+      deleteButton.addEventListener("click", () => {
+        deleteFantasyTeam(team.id);
+      });
+      row.append(deleteButton);
+    }
+
+    els.teamList.append(row);
   });
 }
 
@@ -10873,6 +10891,57 @@ function createFantasyTeam(name, username = "", password = "") {
   state.activeTeamId = team.id;
   state.currentView = "draft";
   return team;
+}
+
+function deleteFantasyTeam(teamId) {
+  if (!isAdminSite()) return;
+  const team = teamById(teamId);
+  if (!team) return;
+
+  const rosterCount = Array.isArray(team.picks) ? team.picks.length : 0;
+  const detail = rosterCount
+    ? ` This will also remove ${rosterCount} drafted player${rosterCount === 1 ? "" : "s"} from that roster.`
+    : "";
+  if (!confirm(`Delete ${team.name}?${detail}`)) return;
+
+  state.teams = state.teams.filter((candidate) => candidate.id !== teamId);
+  state.draftOrder = Array.isArray(state.draftOrder)
+    ? state.draftOrder.filter((candidateId) => candidateId !== teamId)
+    : [];
+  state.tradeOffers = state.tradeOffers.filter((offer) => (
+    offer.fromTeamId !== teamId && offer.toTeamId !== teamId
+  ));
+  state.draftHistory = state.draftHistory.filter((pick) => pick.teamId !== teamId);
+
+  if (state.activeTeamId === teamId) {
+    state.activeTeamId = state.signedInTeamId && state.signedInTeamId !== teamId ? state.signedInTeamId : null;
+  }
+  if (state.signedInTeamId === teamId) {
+    state.signedInTeamId = null;
+    state.activeTeamId = null;
+    state.currentView = "draft";
+    state.showTradeInbox = false;
+  }
+  if (state.matchupOpponentId === teamId) {
+    state.matchupOpponentId = null;
+  }
+  if (state.selectedTradeTarget === teamId) {
+    state.selectedTradeTarget = null;
+  }
+
+  ensureDraftOrder();
+  if (!state.teams.length) {
+    state.pick = 1;
+    state.draftStarted = false;
+    state.draftHistory = [];
+    state.tradeOffers = [];
+    resetDraftTimer();
+  } else {
+    const maxPick = state.teams.length * rosterSlots.length + 1;
+    state.pick = Math.min(Math.max(Number(state.pick) || 1, 1), maxPick);
+  }
+
+  persistAndRender();
 }
 
 function signInToTeam(teamId, username, password) {

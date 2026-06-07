@@ -566,6 +566,13 @@ select:focus {
   padding: 16px;
 }
 
+.team-card-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: stretch;
+}
+
 .team-card {
   display: grid;
   gap: 5px;
@@ -596,6 +603,20 @@ select:focus {
 .team-card-meta {
   color: var(--muted);
   font-size: 0.86rem;
+}
+
+.delete-team-btn {
+  min-width: 76px;
+  min-height: 44px;
+  border: 1px solid #d99b9b;
+  border-radius: 8px;
+  background: #fff2f2;
+  color: #8a1f1f;
+  font-weight: 900;
+}
+
+.delete-team-btn:hover {
+  background: #ffe4e4;
 }
 
 .secondary-action {
