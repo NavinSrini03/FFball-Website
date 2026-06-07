@@ -280,6 +280,11 @@ h1 {
   background: #3c2b0c;
 }
 
+.draft-status .draft-timer[data-status="ready"] {
+  border-color: #9fd4b8;
+  background: #173b2a;
+}
+
 .draft-status .draft-timer[data-status="expired"] {
   border-color: #fca5a5;
   background: #4a1717;
