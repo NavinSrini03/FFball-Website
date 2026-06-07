@@ -151,10 +151,12 @@
           <div class="draft-status" aria-label="Draft status">
             <span>Round <strong id="roundNumber">1</strong></span>
             <span>Pick <strong id="pickNumber">1</strong></span>
+            <span class="draft-timer" id="draftTimerCard">Timer <strong id="draftTimer">Ready</strong></span>
             <span class="on-clock">On clock <strong id="onClockTeam">Select team</strong></span>
           </div>
 
           <div class="draft-room-actions" aria-label="Draft controls">
+            <button class="primary-action admin-draft-action" id="startDraftBtn" type="button">Start draft</button>
             <button class="primary-action" id="quickDraftBtn" type="button">Auto select</button>
             <button class="secondary-action" id="autoCompleteDraftBtn" type="button">Auto-complete draft</button>
             <button class="secondary-action" id="randomizeOrderBtn" type="button">Randomize draft order</button>
@@ -185,6 +187,7 @@
             </div>
           </div>
           <div class="player-board" id="playerBoard"></div>
+          <section class="recent-picks" id="recentPicks" aria-label="Recently selected draft picks"></section>
         </section>
 
       </section>
