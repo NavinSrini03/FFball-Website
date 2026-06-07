@@ -8836,6 +8836,7 @@ const state = loadState() ?? {
   matchupOpponentId: null,
   matchupWeek: 1,
   pick: 1,
+  draftStarted: false,
   draftPickStartedAt: Date.now(),
 };
 
@@ -8895,6 +8896,7 @@ if (state.playerDataVersion !== playerDataVersion) {
   state.showTradeInbox = false;
   state.tradeOffers = [];
   state.draftHistory = [];
+  state.draftStarted = false;
   state.draftPickStartedAt = Date.now();
 }
 
@@ -8902,6 +8904,12 @@ ensureDraftOrder();
 state.currentView = ["draft", "team", "matchup", "freeAgency", "league"].includes(state.currentView) ? state.currentView : "draft";
 state.tradeOffers = Array.isArray(state.tradeOffers) ? state.tradeOffers : [];
 state.draftHistory = Array.isArray(state.draftHistory) ? state.draftHistory : [];
+repairDraftHistoryFromRosters();
+state.draftStarted = Boolean(
+  state.draftStarted ||
+  state.pick > 1 ||
+  state.teams.some((team) => Array.isArray(team.picks) && team.picks.length > 0),
+);
 state.draftPickStartedAt = Number.isFinite(Number(state.draftPickStartedAt)) ? Number(state.draftPickStartedAt) : Date.now();
 state.selectedTradeTarget = state.selectedTradeTarget ?? null;
 state.showTradeInbox = Boolean(state.showTradeInbox);
@@ -8969,6 +8977,7 @@ const els = {
   tradeInboxBtn: document.querySelector("#tradeInboxBtn"),
   tradeInboxCount: document.querySelector("#tradeInboxCount"),
   quickDraftBtn: document.querySelector("#quickDraftBtn"),
+  startDraftBtn: document.querySelector("#startDraftBtn"),
   autoCompleteDraftBtn: document.querySelector("#autoCompleteDraftBtn"),
   randomizeOrderBtn: document.querySelector("#randomizeOrderBtn"),
   resetDraftBtn: document.querySelector("#resetDraftBtn"),
@@ -9065,6 +9074,7 @@ function sharedDraftState() {
     teams: state.teams,
     draftOrder: state.draftOrder,
     pick: state.pick,
+    draftStarted: state.draftStarted,
     draftPickStartedAt: state.draftPickStartedAt,
     tradeOffers: state.tradeOffers,
     draftHistory: state.draftHistory,
@@ -9078,11 +9088,17 @@ function applySharedDraftState(nextSharedState) {
   state.teams = Array.isArray(nextSharedState.teams) ? nextSharedState.teams : state.teams;
   state.draftOrder = Array.isArray(nextSharedState.draftOrder) ? nextSharedState.draftOrder : state.draftOrder;
   state.pick = Number.isInteger(Number(nextSharedState.pick)) ? Number(nextSharedState.pick) : state.pick;
+  state.draftStarted = Boolean(
+    nextSharedState.draftStarted ||
+    state.pick > 1 ||
+    state.teams.some((team) => Array.isArray(team.picks) && team.picks.length > 0),
+  );
   state.draftPickStartedAt = Number.isFinite(Number(nextSharedState.draftPickStartedAt))
     ? Number(nextSharedState.draftPickStartedAt)
     : state.draftPickStartedAt;
   state.tradeOffers = Array.isArray(nextSharedState.tradeOffers) ? nextSharedState.tradeOffers : [];
   state.draftHistory = Array.isArray(nextSharedState.draftHistory) ? nextSharedState.draftHistory : [];
+  repairDraftHistoryFromRosters();
   ensureDraftOrder();
 
   if (state.signedInTeamId && !state.teams.some((team) => team.id === state.signedInTeamId)) {
@@ -9483,7 +9499,7 @@ function currentDraftTeam() {
 
 function isSignedInTeamOnClock() {
   const team = currentDraftTeam();
-  return Boolean(team && team.id === state.signedInTeamId);
+  return Boolean(state.draftStarted && team && team.id === state.signedInTeamId);
 }
 
 function isDraftComplete() {
@@ -9609,6 +9625,41 @@ function playerById(playerId) {
   return players.find((player) => player.id === playerId) ?? null;
 }
 
+function repairDraftHistoryFromRosters() {
+  if (!Array.isArray(state.teams) || !state.teams.length) return false;
+  const draftedCount = state.teams.reduce((total, team) => total + (Array.isArray(team.picks) ? team.picks.length : 0), 0);
+  const historyCount = Array.isArray(state.draftHistory) ? state.draftHistory.length : 0;
+  if (!draftedCount || historyCount >= draftedCount) return false;
+
+  ensureDraftOrder();
+  const pickQueues = new Map(
+    state.teams.map((team) => [team.id, Array.isArray(team.picks) ? [...team.picks] : []]),
+  );
+  const existingHistoryByPick = new Map(state.draftHistory.map((pick) => [pick.pick, pick]));
+  const repairedHistory = [];
+  const previousPick = state.pick;
+  const totalPicksToRepair = Math.max(previousPick - 1, draftedCount);
+
+  for (let pickNumber = 1; pickNumber <= totalPicksToRepair; pickNumber += 1) {
+    state.pick = pickNumber;
+    const team = currentDraftTeam();
+    const playerId = team ? pickQueues.get(team.id)?.shift() : null;
+    if (!team || !playerById(playerId)) continue;
+    const existingPick = existingHistoryByPick.get(pickNumber);
+    repairedHistory.push({
+      pick: pickNumber,
+      teamId: team.id,
+      playerId,
+      selectedAt: existingPick?.selectedAt ?? Date.now(),
+    });
+  }
+
+  state.pick = previousPick;
+  if (repairedHistory.length <= historyCount) return false;
+  state.draftHistory = repairedHistory;
+  return true;
+}
+
 function recordDraftPick(team, playerId, pickNumber) {
   if (!team || !playerById(playerId)) return;
   state.draftHistory = Array.isArray(state.draftHistory) ? state.draftHistory : [];
@@ -9626,7 +9677,7 @@ function resetDraftTimer() {
 }
 
 function remainingDraftPickMs() {
-  if (isDraftComplete()) return 0;
+  if (!state.draftStarted || isDraftComplete()) return 0;
   const startedAt = Number.isFinite(Number(state.draftPickStartedAt)) ? Number(state.draftPickStartedAt) : Date.now();
   return Math.max(draftPickDurationMs - (Date.now() - startedAt), 0);
 }
@@ -9640,6 +9691,13 @@ function formatDraftTimer(ms) {
 
 function updateDraftTimerDisplay() {
   if (!els.draftTimer) return;
+  if (!state.draftStarted && !isDraftComplete()) {
+    autoPickInProgressForPick = null;
+    els.draftTimer.textContent = "Ready";
+    els.draftTimerCard?.setAttribute("data-status", "ready");
+    return;
+  }
+
   if (isDraftComplete()) {
     autoPickInProgressForPick = null;
     els.draftTimer.textContent = "Done";
@@ -9829,7 +9887,11 @@ function renderSignIn() {
   els.signinUsername.disabled = !state.teams.length;
   els.signinPassword.disabled = !state.teams.length;
   els.signinForm.querySelector("button").disabled = !state.teams.length;
-  els.quickDraftBtn.disabled = !team || !isSignedInTeamOnClock();
+  els.quickDraftBtn.disabled = !team || !state.draftStarted || !isSignedInTeamOnClock();
+  if (els.startDraftBtn) {
+    els.startDraftBtn.hidden = !isAdminSite();
+    els.startDraftBtn.disabled = !isAdminSite() || state.teams.length < 1 || state.draftStarted || isDraftComplete();
+  }
   if (els.autoCompleteDraftBtn) {
     els.autoCompleteDraftBtn.disabled = !state.teams.length || isDraftComplete();
   }
@@ -9857,7 +9919,7 @@ function renderRoster() {
   els.teamStats.innerHTML = "";
   els.activeTeamName.textContent = team ? team.name : "Create a team";
   if (els.autoFillBtn) {
-    els.autoFillBtn.disabled = !team || !isSignedInTeamOnClock() || team.picks.length >= rosterSlots.length;
+    els.autoFillBtn.disabled = !team || !state.draftStarted || !isSignedInTeamOnClock() || team.picks.length >= rosterSlots.length;
   }
 
   if (!team) {
@@ -9919,7 +9981,7 @@ function renderPlayerList(container, visiblePlayers, actionLabel, emptyMessage, 
     card.querySelector(".player-score").textContent = playerPointsLabel(player);
     const addButton = card.querySelector(".player-action-btn");
     const canAdd = canAddPlayer(team, player);
-    const isAllowedTurn = !requiresTurn || isSignedInTeamOnClock();
+    const isAllowedTurn = !requiresTurn || (state.draftStarted && isSignedInTeamOnClock());
     const isRosterFull = Boolean(team && team.picks.length >= rosterSlots.length);
     const canQueueFullRosterAdd = allowFullRosterQueue && isRosterFull && !draftedIds().has(player.id);
     addButton.textContent = canAdd && isAllowedTurn ? actionLabel : requiresTurn && !isAllowedTurn ? "Wait turn" : canQueueFullRosterAdd ? actionLabel : "Wrong pos";
@@ -10566,7 +10628,7 @@ function renderClock() {
   const teamCount = Math.max(state.teams.length, 1);
   els.pickNumber.textContent = state.pick;
   els.roundNumber.textContent = Math.ceil(state.pick / teamCount);
-  els.onClockTeam.textContent = currentDraftTeam()?.name ?? "No teams";
+  els.onClockTeam.textContent = state.draftStarted ? currentDraftTeam()?.name ?? "No teams" : "Waiting for admin";
   updateDraftTimerDisplay();
 }
 
@@ -10870,7 +10932,7 @@ function autoDraftPick() {
 
 function autoDraftExpiredPick() {
   const expiredPick = state.pick;
-  if (autoPickInProgressForPick === expiredPick || isDraftComplete()) return;
+  if (!state.draftStarted || autoPickInProgressForPick === expiredPick || isDraftComplete()) return;
   autoPickInProgressForPick = expiredPick;
 
   const team = currentDraftTeam();
@@ -10907,6 +10969,8 @@ function autoDraftExpiredPick() {
 
 function autoCompleteDraft() {
   if (!state.teams.length || isDraftComplete()) return;
+  state.draftStarted = true;
+  resetDraftTimer();
 
   let guard = players.length * Math.max(state.teams.length, 1);
   while (!isDraftComplete() && availablePlayers().length && guard > 0) {
@@ -10958,8 +11022,19 @@ function randomizeDraftOrder() {
     state.tradeOffers = [];
     state.draftHistory = [];
     state.selectedTradeTarget = null;
+    state.draftStarted = false;
     state.pick = 1;
     resetDraftTimer();
+  }
+  resetDraftTimer();
+  persistAndRender();
+}
+
+function startDraft() {
+  if (!isAdminSite() || state.teams.length < 1 || state.draftStarted || isDraftComplete()) return;
+  state.draftStarted = true;
+  if (!Number.isInteger(Number(state.pick)) || state.pick < 1) {
+    state.pick = 1;
   }
   resetDraftTimer();
   persistAndRender();
@@ -11079,6 +11154,12 @@ els.quickDraftBtn.addEventListener("click", () => {
   autoDraftPick();
 });
 
+if (els.startDraftBtn) {
+  els.startDraftBtn.addEventListener("click", () => {
+    startDraft();
+  });
+}
+
 if (els.autoCompleteDraftBtn) {
   els.autoCompleteDraftBtn.addEventListener("click", () => {
     autoCompleteDraft();
@@ -11107,6 +11188,7 @@ if (els.resetDraftBtn) {
     state.tradeOffers = [];
     state.draftHistory = [];
     state.selectedTradeTarget = null;
+    state.draftStarted = false;
     state.pick = 1;
     resetDraftTimer();
     persistAndRender();
