@@ -9506,6 +9506,10 @@ function isDraftComplete() {
   return state.teams.length > 0 && state.teams.every((team) => team.picks.length >= rosterSlots.length);
 }
 
+function isFreeAgencyOpen() {
+  return isDraftComplete();
+}
+
 function draftedIds() {
   return new Set(state.teams.flatMap((team) => team.picks));
 }
@@ -9888,6 +9892,8 @@ function renderSignIn() {
   els.signinPassword.disabled = !state.teams.length;
   els.signinForm.querySelector("button").disabled = !state.teams.length;
   els.quickDraftBtn.disabled = !team || !state.draftStarted || !isSignedInTeamOnClock();
+  els.freeAgentSearch.disabled = !isFreeAgencyOpen();
+  els.freeAgentPosition.disabled = !isFreeAgencyOpen();
   if (els.startDraftBtn) {
     els.startDraftBtn.hidden = !isAdminSite();
     els.startDraftBtn.disabled = !isAdminSite() || state.teams.length < 1 || state.draftStarted || isDraftComplete();
@@ -10042,6 +10048,15 @@ function renderRecentPicks() {
 }
 
 function renderFreeAgents() {
+  if (!isFreeAgencyOpen()) {
+    state.selectedFreeAgentId = null;
+    state.pendingAddPlayerId = null;
+    els.freeAgentConfirm.hidden = true;
+    els.freeAgentConfirm.innerHTML = "";
+    els.freeAgentBoard.innerHTML = '<p class="empty-state">Free agency opens after the draft is complete.</p>';
+    return;
+  }
+
   const query = els.freeAgentSearch.value.trim().toLowerCase();
   const position = els.freeAgentPosition.value;
   const visiblePlayers = availablePlayers().filter((player) => playerMatchesFilters(player, query, position));
@@ -10129,6 +10144,9 @@ function renderTeamView() {
   const starterTotal = teamWeeklyProjectedScore(team);
   const rosterTotal = roster.reduce((sum, item) => sum + (item.player ? projectedGameAverage(item.player) : 0), 0);
   const benchTotal = bench.reduce((sum, item) => sum + (item.player ? projectedGameAverage(item.player) : 0), 0);
+  if (!isFreeAgencyOpen() && state.pendingAddPlayerId) {
+    state.pendingAddPlayerId = null;
+  }
   const queuedPlayer = pendingAddPlayer();
   const selectedSwapPlayer = players.find((player) => player.id === state.selectedSwapPlayerId);
   if (selectedSwapPlayer && !team.picks.includes(selectedSwapPlayer.id)) {
@@ -10239,8 +10257,8 @@ function renderTeamView() {
         dropButton.className = "drop-player-btn";
         dropButton.type = "button";
         const canDrop = queuedPlayer ? canReplacePlayer(team, player.id, queuedPlayer) : canDropPlayer(team, player.id);
-        dropButton.textContent = queuedPlayer ? (canDrop ? "Drop & add" : "Min pos") : canDrop ? "Drop" : "Min pos";
-        dropButton.disabled = !canDrop;
+        dropButton.textContent = !isFreeAgencyOpen() ? "After draft" : queuedPlayer ? (canDrop ? "Drop & add" : "Min pos") : canDrop ? "Drop" : "Min pos";
+        dropButton.disabled = !isFreeAgencyOpen() || !canDrop;
         dropButton.addEventListener("click", () => dropPlayerFromTeam(player.id));
         actionGroup.append(dropButton);
 
@@ -10766,7 +10784,7 @@ function declineTradeOffer(offerId) {
 
 function selectFreeAgentForConfirm(playerId) {
   const player = players.find((candidate) => candidate.id === playerId);
-  if (!isSignedIn() || !player || draftedIds().has(player.id)) return;
+  if (!isFreeAgencyOpen() || !isSignedIn() || !player || draftedIds().has(player.id)) return;
   state.selectedFreeAgentId = playerId;
   persistAndRender();
 }
@@ -10780,7 +10798,7 @@ function confirmFreeAgentAdd() {
 function requestFreeAgentAdd(playerId) {
   const team = activeTeam();
   const player = players.find((candidate) => candidate.id === playerId);
-  if (!isSignedIn() || !team || !player || draftedIds().has(player.id)) return;
+  if (!isFreeAgencyOpen() || !isSignedIn() || !team || !player || draftedIds().has(player.id)) return;
 
   if (canAddPlayer(team, player)) {
     state.selectedFreeAgentId = null;
@@ -10798,7 +10816,7 @@ function requestFreeAgentAdd(playerId) {
 
 function dropPlayerFromTeam(playerId) {
   const team = activeTeam();
-  if (!isSignedIn() || !team) return;
+  if (!isFreeAgencyOpen() || !isSignedIn() || !team) return;
   const queuedPlayer = pendingAddPlayer();
   if (queuedPlayer && !canReplacePlayer(team, playerId, queuedPlayer)) {
     return;
